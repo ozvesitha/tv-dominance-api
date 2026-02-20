@@ -1,5 +1,6 @@
 Flask==2.3.3
 flask-cors==4.0.0
-tvdatafeed
+git+https://github.com/rongardF/tvdatafeed.git
 pandas
+
 gunicorn
