@@ -1,0 +1,41 @@
+name: Fetch Crypto Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: 'نماد ارز (مثلاً: BTCUSDT, ETHUSDT, SOLUSDT)'
+        required: true
+        default: 'BTCUSDT'
+        type: string
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run fetch script
+        env:
+          SYMBOL: ${{ github.event.inputs.symbol }}
+        run: python fetch_data.py
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/
+          git diff --staged --quiet || git commit -m "Update data for ${{ github.event.inputs.symbol }} [skip ci]"
+          git push
