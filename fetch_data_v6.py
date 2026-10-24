@@ -491,12 +491,12 @@ def detect_cascades(trades, min_quote=20000, window_ms=500, min_count=3):
             cur['total'] += t['quote']; cur['count'] += 1
             cur['lastTime'] = ts; cur['lastPrice'] = t['price']
         else:
-            if cur and cur['count'] >= min_count:
-                out.append(dict(cur))
+             if cur and cur['count'] >= min_count:
+                out.append({**cur, 'lastTime': to_iso(cur['lastTime'])})
             cur = {'startTime': t['time'], 'lastTime': ts, 'side': t['side'],
                    'count': 1, 'total': t['quote'], 'firstPrice': t['price'], 'lastPrice': t['price']}
-    if cur and cur['count'] >= min_count:
-        out.append(dict(cur))
+     if cur and cur['count'] >= min_count:
+        out.append({**cur, 'lastTime': to_iso(cur['lastTime'])})
     return out[-50:]
 
 
