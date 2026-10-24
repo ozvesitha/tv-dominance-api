@@ -42,7 +42,7 @@ DOMINANCE_TIMEOUT = 45
 DOMINANCE_API_URL = 'https://tv-dominance-api.onrender.com/api/dominance'
 DOMINANCE_SYMBOLS = ['CRYPTOCAP:USDT.D']
 #BINANCE_FAPI = 'https://fapi.binance.com'
-BINANCE_FAPI = 'https://binance-proxy.YOUR_SUBDOMAIN.workers.dev'
+BINANCE_FAPI = 'https://binance-proxy.ozvesitha.workers.dev'
 
 OUTPUT_DIR = Path('data')
 
