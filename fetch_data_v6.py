@@ -482,23 +482,35 @@ def compute_vp(candles, bins=50, value_area_pct=0.7):
 def detect_cascades(trades, min_quote=20000, window_ms=500, min_count=3):
     if not trades:
         return []
-    out = []; cur = None
+    out = []
+    cur = None
     for t in trades:
         ts = int(datetime.fromisoformat(t['time'].replace('Z', '+00:00')).timestamp() * 1000)
         if t['quote'] < min_quote:
             continue
         if cur and cur['side'] == t['side'] and (ts - cur['lastTime']) < window_ms:
-            cur['total'] += t['quote']; cur['count'] += 1
-            cur['lastTime'] = ts; cur['lastPrice'] = t['price']
+            cur['total'] += t['quote']
+            cur['count'] += 1
+            cur['lastTime'] = ts
+            cur['lastPrice'] = t['price']
         else:
-             if cur and cur['count'] >= min_count:
-                out.append({**cur, 'lastTime': to_iso(cur['lastTime'])})
-            cur = {'startTime': t['time'], 'lastTime': ts, 'side': t['side'],
-                   'count': 1, 'total': t['quote'], 'firstPrice': t['price'], 'lastPrice': t['price']}
-     if cur and cur['count'] >= min_count:
-        out.append({**cur, 'lastTime': to_iso(cur['lastTime'])})
+            if cur and cur['count'] >= min_count:
+                out.append(dict(cur))
+            cur = {
+                'startTime': t['time'],
+                'lastTime': ts,
+                'side': t['side'],
+                'count': 1,
+                'total': t['quote'],
+                'firstPrice': t['price'],
+                'lastPrice': t['price']
+            }
+    if cur and cur['count'] >= min_count:
+        out.append(dict(cur))
+    # Convert lastTime to ISO in the output
+    for c in out:
+        c['lastTime'] = to_iso(c['lastTime'])
     return out[-50:]
-
 
 # ======================== COMPACT ========================
 def build_compact(full):
