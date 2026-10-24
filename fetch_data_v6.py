@@ -507,11 +507,8 @@ def detect_cascades(trades, min_quote=20000, window_ms=500, min_count=3):
             }
     if cur and cur['count'] >= min_count:
         out.append(dict(cur))
-    # Convert lastTime to ISO in the output
-    for c in out:
-        c['lastTime'] = to_iso(c['lastTime'])
     return out[-50:]
-
+    
 # ======================== COMPACT ========================
 def build_compact(full):
     out = json.loads(json.dumps(full))
