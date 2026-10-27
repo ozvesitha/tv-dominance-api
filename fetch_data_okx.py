@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-داده ترکیبی OKX v2 — Futures + USDT.D + VP
-نسخه اصلاح شده برای حل مشکل داده‌های خالی (وال‌ها، CVD و L/S)
+داده ترکیبی OKX v3 — Futures + USDT.D + VP
+نسخه نهایی با اصلاح کامل وال‌ها (20000 ترید) و حجم Taker
 """
 
 import os
@@ -116,12 +116,13 @@ def fetch_okx_candles(symbol: str, timeframe: str, custom_limit: int = None):
         'trades': 0, 'taker_buy_base': 0, 'taker_buy_quote': 0, 'delta': 0, 'delta_ratio': 0
     } for c in data]
 
-def fetch_okx_whale_trades(symbol: str, target_limit: int = 5000):
-    """جمع آوری 5000 ترید آخر از طریق صفحه بندی و فیلتر کردن وال ها"""
+def fetch_okx_whale_trades(symbol: str, target_limit: int = 20000):
+    """جمع آوری 20000 ترید آخر از طریق صفحه بندی و فیلتر کردن وال ها"""
     okx_symbol = to_okx_symbol(symbol)
     all_trades = []
     after = None
     
+    # 20000 / 100 = 200 درخواست
     for _ in range(target_limit // 100):
         url = f"{OKX_BASE}/api/v5/market/history-trades?instId={okx_symbol}&limit=100"
         if after:
@@ -141,9 +142,10 @@ def fetch_okx_whale_trades(symbol: str, target_limit: int = 5000):
             })
         
         after = res['data'][-1]['tradeId']
-        time.sleep(0.1) # جلوگیری از بلاک شدن
+        # فاصله 120 میلی ثانیه برای جلوگیری از بلاک شدن
+        time.sleep(0.12) 
 
-    # فیلتر کردن فقط تریدهای درشت
+    # فیلتر کردن فقط تریدهای درشت (بالای 50000 دلار)
     whales = [t for t in all_trades if t['quote'] >= WHALE_THRESHOLD_LOW]
     return all_trades, whales
 
@@ -195,7 +197,7 @@ def fetch_okx_funding_history(symbol: str, limit: int):
 
 def fetch_okx_long_short(symbol: str, period: str, limit: int):
     base = symbol.replace('USDT', '')
-    period_map = {'5m': '5m', '15m': '5m', '1h': '1H'} # برای 15m از داده 5m استفاده میکنیم
+    period_map = {'5m': '5m', '15m': '5m', '1h': '1H'}
     p = period_map[period]
     
     url = f"{OKX_BASE}/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy={base}&period={p}"
@@ -210,10 +212,9 @@ def fetch_okx_long_short(symbol: str, period: str, limit: int):
         long = ratio / (1 + ratio) if ratio > 0 else 0
         res.append({'time': to_iso(int(d[0])), 'long': long, 'short': short, 'ratio': ratio})
     
-    res = res[:limit*3] # گرفتن 3 برابر برای تجمیع
+    res = res[:limit*3]
     
     if period == '15m':
-        # تجمیع 3 تا 5 دقیقه برای ساختن 15 دقیقه
         agg = []
         for i in range(0, len(res), 3):
             chunk = res[i:i+3]
@@ -231,7 +232,8 @@ def fetch_okx_taker_volume(symbol: str, period: str, limit: int):
     period_map = {'5m': '5m', '15m': '5m', '1h': '1H'}
     p = period_map[period]
     
-    url = f"{OKX_BASE}/api/v5/rubik/stat/taker-volume-contract?ccy={base}&period={p}"
+    # استفاده از Endpoint جدید که هم برای اسپات و هم فیوچرز کار میکند
+    url = f"{OKX_BASE}/api/v5/rubik/stat/taker-volume?ccy={base}&period={p}"
     data = safe_fetch(url)
     if not data or data.get('code') != '0' or not data.get('data'):
         return []
@@ -451,8 +453,8 @@ def fetch_all_data(symbol: str):
             timeframe_data[tf] = {'candles': [], 'error': str(e)}
             log(f"  {tf} ERROR: {e}")
 
-    log(f"📡 [2/8] Fetching Whale Trades (5000 history + filter)...")
-    all_trades, whale_trades = fetch_okx_whale_trades(symbol, 5000)
+    log(f"📡 [2/8] Fetching Whale Trades (20000 history + filter)...")
+    all_trades, whale_trades = fetch_okx_whale_trades(symbol, 20000)
     log(f"  {len(all_trades)} total trades | {len(whale_trades)} whales found")
 
     log(f"📡 [3/8] Fetching Order Book...")
@@ -505,7 +507,7 @@ def fetch_all_data(symbol: str):
             'whale_low_threshold_usd': WHALE_THRESHOLD_LOW,
             'whale_threshold_usd': WHALE_THRESHOLD,
             'mega_whale_threshold_usd': MEGA_WHALE_THRESHOLD,
-            'version': 'okx_v2'
+            'version': 'okx_v3'
         },
         'data': {
             'coin': {
@@ -596,7 +598,7 @@ def build_compact_output(full):
 
 if __name__ == '__main__':
     symbol = os.environ.get('SYMBOL', 'SOLUSDT').strip().upper()
-    log(f"=== OKX Fetcher v2 | symbol={symbol} ===")
+    log(f"=== OKX Fetcher v3 | symbol={symbol} ===")
     
     try:
         full_data = fetch_all_data(symbol)
