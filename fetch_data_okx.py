@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OKX v5 Futures-only Data Fetcher — نسخه نهایی کامل (v5)
+OKX v6 Futures-only Data Fetcher — نسخه نهایی کامل (v6)
 - فقط فیوچرز (بدون اسپات)
 - ترتیب زمانی صعودی برای همه داده‌ها
 - صفحه‌بندی صحیح کندل‌ها با before/after
@@ -8,9 +8,9 @@ OKX v5 Futures-only Data Fetcher — نسخه نهایی کامل (v5)
 - Top Trader L/S جداگانه
 - nextFundingTime از funding-rate
 - OI history محدود به 72 (سقف OKX)
-- delta و delta_ratio تمام کندل‌ها با صفحه‌بندی عمیق history-trades
-- همگام‌سازی واحد Open Interest (current در USD، history در USD)
-- cvd_min و cvd_max واقعی از cvd_10s
+- delta و delta_ratio از تریدهای واقعی (پنجره ~۵۰ دقیقه)
+- همگام‌سازی واحد Open Interest: current و history هر دو از rubik و در USD
+- quote_volume از c[7] (volCcyQuote=USDT) و volume از c[6] (volCcy=SOL)
 """
 
 import os
@@ -121,8 +121,8 @@ def fetch_okx_candles(symbol: str, timeframe: str, custom_limit: int = None):
             'high': float(c[2]),
             'low': float(c[3]),
             'close': float(c[4]),
-            'volume': float(c[5]),
-            'quote_volume': float(c[6]),
+            'volume': float(c[6]),         # volCcy = حجم به ارز پایه (SOL)
+            'quote_volume': float(c[7]),   # volCcyQuote = حجم به ارز کوتی (USDT)
             'trades': 0,
             'taker_buy_base': 0,
             'taker_buy_quote': 0,
@@ -131,11 +131,11 @@ def fetch_okx_candles(symbol: str, timeframe: str, custom_limit: int = None):
         })
     return out
 
-# ======================== تریدها (با صفحه‌بندی عمیق و حذف تکراری) ========================
+# ======================== تریدها ========================
 def fetch_okx_trades(symbol: str, target_limit: int = 50000):
     """
     جمع‌آوری تریدهای تاریخی با صفحه‌بندی عمیق.
-    برای پر کردن دلتای ۱۲۰ کندل 1m به حدود ۵۰۰۰۰ ترید نیاز است.
+    پنجره ~۵۰ دقیقه اخیر را پوشش می‌دهد (کافی برای delta آخرین کندل‌ها).
     """
     okx_symbol = to_okx_symbol(symbol)
     all_trades = []
@@ -184,14 +184,20 @@ def fetch_okx_orderbook(symbol: str):
         'lastUpdateId': book['ts']
     }
 
-# ======================== Open Interest (همگام‌سازی واحد) ========================
+# ======================== Open Interest (همگام‌سازی کامل واحد) ========================
 def fetch_okx_open_interest_current(symbol: str, mark_price: float = None):
     """
-    OI فعلی را به دو صورت برمی‌گرداند:
-    - oi_contracts: تعداد قرارداد (طبق مستندات OKX)
-    - oi_usd: ارزش دلاری (اگر mark_price موجود باشد)
-    برای همگام‌سازی با تاریخچه (که USD است)، از oi_usd استفاده می‌کنیم.
+    current OI از همان endpoint rubik گرفته می‌شود تا با history هم‌واحد باشد.
+    نتیجه: current.oi_usd == history_5m[-1].oi_usd (تقریباً دقیق) → delta OI معنی‌دار.
+    fallback (اگر rubik خالی بود): از public endpoint + ضرب در mark_price.
     """
+    hist = fetch_okx_open_interest_hist(symbol, '5m', 1)
+    if hist:
+        return {
+            'oi_usd': hist[-1]['oi_usd'],
+            'time': hist[-1]['time'],
+            'source': 'rubik_5m_last'
+        }
     okx_symbol = to_okx_symbol(symbol)
     url = f"{OKX_BASE}/api/v5/public/open-interest?instId={okx_symbol}"
     data = safe_fetch(url)
@@ -203,13 +209,14 @@ def fetch_okx_open_interest_current(symbol: str, mark_price: float = None):
     return {
         'oi_contracts': oi_contracts,
         'oi_usd': oi_usd,
-        'time': to_iso(int(d['ts']))
+        'time': to_iso(int(d['ts'])),
+        'source': 'public_fallback'
     }
 
 def fetch_okx_open_interest_hist(symbol: str, period: str, limit: int):
     """
-    تاریخچه OI از rubik/stat/contracts/open-interest-volume
-    این اندپوینت oi را به صورت USD ارزش برمی‌گرداند.
+    تاریخچه OI از rubik/stat/contracts/open-interest-volume.
+    مقدار oi به USD است (ارزش دلاری).
     """
     base = symbol.replace('USDT', '')
     period_map = {'5m': '5m', '1h': '1H', '1d': '1D'}
@@ -222,7 +229,7 @@ def fetch_okx_open_interest_hist(symbol: str, period: str, limit: int):
     raw.reverse()  # صعودی
     return [{
         'time': to_iso(int(d[0])),
-        'oi_usd': float(d[1]),  # واحد: USD (مطابق مستندات OKX)
+        'oi_usd': float(d[1]),
         'oi_value': 0
     } for d in raw]
 
@@ -670,7 +677,7 @@ def fetch_all_data(symbol: str):
     orderbook = fetch_okx_orderbook(symbol)
 
     log(f"📡 [4/8] Open Interest...")
-    # ابتدا قیمت mark را می‌گیریم تا OI را به USD تبدیل کنیم
+    # قیمت mark فقط برای fallback و premium_index لازم است
     mark_price = fetch_okx_mark_price(symbol)
     mark_px = float(mark_price['markPx']) if mark_price else None
     oi_current = fetch_okx_open_interest_current(symbol, mark_px)
@@ -739,7 +746,7 @@ def fetch_all_data(symbol: str):
             'whale_low_threshold_usd': WHALE_THRESHOLD_LOW,
             'whale_threshold_usd': WHALE_THRESHOLD,
             'mega_whale_threshold_usd': MEGA_WHALE_THRESHOLD,
-            'version': 'okx_v5_fixed'
+            'version': 'okx_v6_fixed'
         },
         'data': {
             'coin': {
@@ -842,7 +849,7 @@ def build_compact_output(full):
 
 if __name__ == '__main__':
     symbol = os.environ.get('SYMBOL', 'SOLUSDT').strip().upper()
-    log(f"=== OKX Fetcher v5 (نهایی) | {symbol} ===")
+    log(f"=== OKX Fetcher v6 (نهایی) | {symbol} ===")
     try:
         full_data = fetch_all_data(symbol)
         compact_data = build_compact_output(full_data)
