@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-داده ترکیبی OKX v1 — Futures + USDT.D + VP
-تبدیل شده از HTML به پایتون برای اجرا در GitHub Actions.
+داده ترکیبی OKX v2 — Futures + USDT.D + VP
+نسخه اصلاح شده برای حل مشکل داده‌های خالی (وال‌ها، CVD و L/S)
 """
 
 import os
@@ -11,7 +11,6 @@ import time
 import random
 from datetime import datetime, timezone
 from pathlib import Path
-import concurrent.futures
 import requests
 
 # ======================== تنظیمات ========================
@@ -19,16 +18,11 @@ TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d']
 DOMINANCE_TIMEFRAMES = ['1h', '4h']
 CANDLE_LIMITS = {'1m': 240, '5m': 100, '15m': 200, '1h': 200, '4h': 100, '1d': 60}
 DOMINANCE_LIMIT = 100
-TRADES_LIMIT = 500
 ORDERBOOK_LIMIT = 400
 OI_5M_LIMIT = 60
 OI_1H_LIMIT = 60
 OI_1D_LIMIT = 15
 FUNDING_LIMIT = 30
-LS_LIMIT = 200
-TAKER_LIMIT = 200
-LS_15M_LIMIT = 50
-TAKER_15M_LIMIT = 50
 
 WHALE_THRESHOLD_LOW = 50000
 WHALE_THRESHOLD = 100000
@@ -61,12 +55,6 @@ def to_iso(ms: int) -> str:
     dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
     return f"{dt.strftime('%Y-%m-%dT%H:%M:%S')}.{ms % 1000:03d}Z"
 
-def fetch_with_timeout(url: str, timeout: int = EXCHANGE_TIMEOUT):
-    try:
-        return requests.get(url, timeout=timeout)
-    except Exception as e:
-        raise e
-
 def safe_fetch(url: str, retries: int = 2):
     for i in range(retries + 1):
         try:
@@ -96,15 +84,27 @@ def fetch_okx_candles(symbol: str, timeframe: str, custom_limit: int = None):
     bar = bar_map[timeframe]
     limit = custom_limit if custom_limit is not None else CANDLE_LIMITS.get(timeframe, 200)
     
-    url = f"{OKX_BASE}/api/v5/market/history-candles?instId={okx_symbol}&bar={bar}&limit={limit}" if limit > 100 else f"{OKX_BASE}/api/v5/market/candles?instId={okx_symbol}&bar={bar}&limit={limit}"
-    
-    res = fetch_with_timeout(url)
-    if not res.ok:
-        raise Exception(f"OKX candles HTTP {res.status_code}")
-    data = res.json()
-    if data.get('code') != '0':
-        raise Exception(f"OKX candles error: {data.get('msg')}")
-        
+    if limit > 100:
+        url = f"{OKX_BASE}/api/v5/market/history-candles?instId={okx_symbol}&bar={bar}&limit=100"
+        all_candles = []
+        res = safe_fetch(url)
+        if res and res.get('code') == '0':
+            all_candles.extend(res['data'])
+            while len(all_candles) < limit and res['data']:
+                oldest_ts = int(res['data'][-1][0])
+                url_next = f"{OKX_BASE}/api/v5/market/history-candles?instId={okx_symbol}&bar={bar}&limit=100&after={oldest_ts}"
+                res = safe_fetch(url_next)
+                if res and res.get('code') == '0' and res['data']:
+                    all_candles.extend(res['data'])
+                else:
+                    break
+                time.sleep(0.2)
+        data = all_candles
+    else:
+        url = f"{OKX_BASE}/api/v5/market/candles?instId={okx_symbol}&bar={bar}&limit={limit}"
+        res = safe_fetch(url)
+        data = res['data'] if res and res.get('code') == '0' else []
+
     return [{
         'time': to_iso(int(c[0])),
         'open': float(c[1]),
@@ -113,30 +113,39 @@ def fetch_okx_candles(symbol: str, timeframe: str, custom_limit: int = None):
         'close': float(c[4]),
         'volume': float(c[5]),
         'quote_volume': float(c[6]),
-        'trades': 0,
-        'taker_buy_base': 0,
-        'taker_buy_quote': 0,
-        'delta': 0,
-        'delta_ratio': 0
-    } for c in data['data']]
+        'trades': 0, 'taker_buy_base': 0, 'taker_buy_quote': 0, 'delta': 0, 'delta_ratio': 0
+    } for c in data]
 
-def fetch_okx_trades(symbol: str):
+def fetch_okx_whale_trades(symbol: str, target_limit: int = 5000):
+    """جمع آوری 5000 ترید آخر از طریق صفحه بندی و فیلتر کردن وال ها"""
     okx_symbol = to_okx_symbol(symbol)
-    url = f"{OKX_BASE}/api/v5/market/trades?instId={okx_symbol}&limit={TRADES_LIMIT}"
-    try:
-        res = fetch_with_timeout(url)
-        if not res.ok: return []
-        data = res.json()
-        if data.get('code') != '0': return []
-        return [{
-            'time': to_iso(int(t['ts'])),
-            'price': float(t['px']),
-            'amount': float(t['sz']),
-            'quote': float(t['px']) * float(t['sz']),
-            'side': t['side']
-        } for t in data['data']]
-    except:
-        return []
+    all_trades = []
+    after = None
+    
+    for _ in range(target_limit // 100):
+        url = f"{OKX_BASE}/api/v5/market/history-trades?instId={okx_symbol}&limit=100"
+        if after:
+            url += f"&after={after}"
+            
+        res = safe_fetch(url)
+        if not res or res.get('code') != '0' or not res['data']:
+            break
+            
+        for t in res['data']:
+            all_trades.append({
+                'time': to_iso(int(t['ts'])),
+                'price': float(t['px']),
+                'amount': float(t['sz']),
+                'quote': float(t['px']) * float(t['sz']),
+                'side': t['side']
+            })
+        
+        after = res['data'][-1]['tradeId']
+        time.sleep(0.1) # جلوگیری از بلاک شدن
+
+    # فیلتر کردن فقط تریدهای درشت
+    whales = [t for t in all_trades if t['quote'] >= WHALE_THRESHOLD_LOW]
+    return all_trades, whales
 
 def fetch_okx_orderbook(symbol: str):
     okx_symbol = to_okx_symbol(symbol)
@@ -184,47 +193,77 @@ def fetch_okx_funding_history(symbol: str, limit: int):
         'rate': float(d['fundingRate'])
     } for d in data['data']][::-1]
 
-def fetch_okx_global_long_short_hist(symbol: str, period: str, limit: int):
+def fetch_okx_long_short(symbol: str, period: str, limit: int):
     base = symbol.replace('USDT', '')
-    period_map = {'1h': '1H', '15m': '15m'}
+    period_map = {'5m': '5m', '15m': '5m', '1h': '1H'} # برای 15m از داده 5m استفاده میکنیم
     p = period_map[period]
+    
     url = f"{OKX_BASE}/api/v5/rubik/stat/contracts/long-short-account-ratio?ccy={base}&period={p}"
     data = safe_fetch(url)
     if not data or data.get('code') != '0' or not data.get('data'):
         return []
+    
     res = []
-    for d in data['data'][:limit]:
+    for d in data['data']:
         ratio = float(d[1])
         short = 1 / (1 + ratio) if ratio > 0 else 0
         long = ratio / (1 + ratio) if ratio > 0 else 0
         res.append({'time': to_iso(int(d[0])), 'long': long, 'short': short, 'ratio': ratio})
-    return res
+    
+    res = res[:limit*3] # گرفتن 3 برابر برای تجمیع
+    
+    if period == '15m':
+        # تجمیع 3 تا 5 دقیقه برای ساختن 15 دقیقه
+        agg = []
+        for i in range(0, len(res), 3):
+            chunk = res[i:i+3]
+            if len(chunk) == 3:
+                avg_ratio = sum(c['ratio'] for c in chunk) / 3
+                avg_long = sum(c['long'] for c in chunk) / 3
+                avg_short = sum(c['short'] for c in chunk) / 3
+                agg.append({'time': chunk[0]['time'], 'long': avg_long, 'short': avg_short, 'ratio': avg_ratio})
+        return agg[:limit]
+    
+    return res[:limit]
 
-def fetch_okx_taker_volume_hist(symbol: str, period: str, limit: int):
+def fetch_okx_taker_volume(symbol: str, period: str, limit: int):
     base = symbol.replace('USDT', '')
-    period_map = {'1h': '1H', '15m': '15m'}
+    period_map = {'5m': '5m', '15m': '5m', '1h': '1H'}
     p = period_map[period]
+    
     url = f"{OKX_BASE}/api/v5/rubik/stat/taker-volume-contract?ccy={base}&period={p}"
     data = safe_fetch(url)
     if not data or data.get('code') != '0' or not data.get('data'):
         return []
-    return [{
-        'time': to_iso(int(d[0])),
-        'buy_vol': float(d[2]),
-        'sell_vol': float(d[1]),
-        'ratio': float(d[2]) / float(d[1]) if float(d[1]) > 0 else 0
-    } for d in data['data'][:limit]]
+    
+    res = []
+    for d in data['data']:
+        sell = float(d[1])
+        buy = float(d[2])
+        res.append({'time': to_iso(int(d[0])), 'buy_vol': buy, 'sell_vol': sell, 'ratio': buy / sell if sell > 0 else 0})
+    
+    res = res[:limit*3]
+    
+    if period == '15m':
+        agg = []
+        for i in range(0, len(res), 3):
+            chunk = res[i:i+3]
+            if len(chunk) == 3:
+                avg_buy = sum(c['buy_vol'] for c in chunk)
+                avg_sell = sum(c['sell_vol'] for c in chunk)
+                agg.append({'time': chunk[0]['time'], 'buy_vol': avg_buy, 'sell_vol': avg_sell, 'ratio': avg_buy / avg_sell if avg_sell > 0 else 0})
+        return agg[:limit]
+    
+    return res[:limit]
 
-def fetch_okx_24hr_ticker(symbol: str):
+def fetch_okx_ticker(symbol: str):
     okx_symbol = to_okx_symbol(symbol)
-    url = f"{OKX_BASE}/api/v5/market/ticker?instId={okx_symbol}"
-    data = safe_fetch(url)
+    data = safe_fetch(f"{OKX_BASE}/api/v5/market/ticker?instId={okx_symbol}")
     return data['data'][0] if data and data.get('code') == '0' and data.get('data') else None
 
 def fetch_okx_mark_price(symbol: str):
     okx_symbol = to_okx_symbol(symbol)
-    url = f"{OKX_BASE}/api/v5/public/mark-price?instId={okx_symbol}"
-    data = safe_fetch(url)
+    data = safe_fetch(f"{OKX_BASE}/api/v5/public/mark-price?instId={okx_symbol}")
     return data['data'][0] if data and data.get('code') == '0' and data.get('data') else None
 
 def fetch_dominance(symbol: str, timeframes: list, limit: int):
@@ -241,15 +280,11 @@ def fetch_dominance(symbol: str, timeframes: list, limit: int):
 def compute_cvd(trades):
     if not trades: return None
     buy = sell = cvd = 0.0
-    mn = mx = 0.0
     for t in trades:
         v = t['quote']
-        if t['side'] == 'buy':
-            buy += v; cvd += v
-        else:
-            sell += v; cvd -= v
-        mn = min(mn, cvd); mx = max(mx, cvd)
-    return {'total_buy_volume': buy, 'total_sell_volume': sell, 'net_delta': buy - sell, 'cvd_final': cvd, 'cvd_min': mn, 'cvd_max': mx}
+        if t['side'] == 'buy': buy += v; cvd += v
+        else: sell += v; cvd -= v
+    return {'total_buy_volume': buy, 'total_sell_volume': sell, 'net_delta': buy - sell, 'cvd_final': cvd, 'cvd_min': cvd, 'cvd_max': cvd}
 
 def aggregate_cvd_10s(trades, window_ms=10000):
     if not trades: return []
@@ -405,7 +440,7 @@ def fetch_all_data(symbol: str):
     symbol = symbol.strip().upper()
     if not symbol: raise ValueError("Symbol required")
 
-    log(f"🔄 [1/9] Fetching candles for {symbol}...")
+    log(f"🔄 [1/8] Fetching candles for {symbol}...")
     timeframe_data = {}
     for tf in TIMEFRAMES:
         try:
@@ -416,49 +451,36 @@ def fetch_all_data(symbol: str):
             timeframe_data[tf] = {'candles': [], 'error': str(e)}
             log(f"  {tf} ERROR: {e}")
 
-    log(f"📡 [2/9] Fetching Trades...")
-    trades = fetch_okx_trades(symbol)
-    log(f"  {len(trades)} trades")
+    log(f"📡 [2/8] Fetching Whale Trades (5000 history + filter)...")
+    all_trades, whale_trades = fetch_okx_whale_trades(symbol, 5000)
+    log(f"  {len(all_trades)} total trades | {len(whale_trades)} whales found")
 
-    time.sleep(jitter(600, 400))
-    log(f"📡 [3/9] Fetching Order Book...")
+    log(f"📡 [3/8] Fetching Order Book...")
     orderbook = fetch_okx_orderbook(symbol)
 
-    log(f"📡 [4/9] Fetching Open Interest...")
+    log(f"📡 [4/8] Fetching Open Interest...")
     oi_current = fetch_okx_open_interest(symbol)
     oi_hist_5m = fetch_okx_open_interest_hist(symbol, '5m', OI_5M_LIMIT)
     oi_hist_1h = fetch_okx_open_interest_hist(symbol, '1h', OI_1H_LIMIT)
     oi_hist_1d = fetch_okx_open_interest_hist(symbol, '1d', OI_1D_LIMIT)
 
-    log(f"📡 [5/9] Fetching Funding History...")
+    log(f"📡 [5/8] Fetching Funding & L/S & Taker...")
     funding_hist = fetch_okx_funding_history(symbol, FUNDING_LIMIT)
+    ls_1h = fetch_okx_long_short(symbol, '1h', 60)
+    ls_15m = fetch_okx_long_short(symbol, '15m', 30)
+    tk_1h = fetch_okx_taker_volume(symbol, '1h', 60)
+    tk_15m = fetch_okx_taker_volume(symbol, '15m', 30)
 
-    log(f"📡 [6/9] Fetching Long/Short Ratios & Taker Volume...")
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        f_gls_1h = executor.submit(fetch_okx_global_long_short_hist, symbol, '1h', LS_LIMIT)
-        f_tls_1h = executor.submit(fetch_okx_global_long_short_hist, symbol, '1h', LS_LIMIT) # Top alias to global
-        f_tk_1h = executor.submit(fetch_okx_taker_volume_hist, symbol, '1h', TAKER_LIMIT)
-        f_gls_15m = executor.submit(fetch_okx_global_long_short_hist, symbol, '15m', LS_15M_LIMIT)
-        f_tls_15m = executor.submit(fetch_okx_global_long_short_hist, symbol, '15m', LS_15M_LIMIT)
-        f_tk_15m = executor.submit(fetch_okx_taker_volume_hist, symbol, '15m', TAKER_15M_LIMIT)
-        
-        gls_1h = f_gls_1h.result()
-        tls_1h = f_tls_1h.result()
-        tk_1h = f_tk_1h.result()
-        gls_15m = f_gls_15m.result()
-        tls_15m = f_tls_15m.result()
-        tk_15m = f_tk_15m.result()
-
-    log(f"📡 [7/9] Fetching Ticker & Mark Price...")
-    ticker24h = fetch_okx_24hr_ticker(symbol)
+    log(f"📡 [6/8] Fetching Ticker & Mark Price...")
+    ticker24h = fetch_okx_ticker(symbol)
     mark_price = fetch_okx_mark_price(symbol)
 
-    log(f"🧮 [8/9] Computing CVD, Whales, Depth, VP, Cascades...")
-    cvd = compute_cvd(trades)
-    cvd10s = aggregate_cvd_10s(trades)
-    bs1m = aggregate_buy_sell_1m(trades)
-    large = extract_large_trades(trades, WHALE_THRESHOLD, 20)
-    lw, mw, gw = classify_whales(trades, WHALE_THRESHOLD_LOW, WHALE_THRESHOLD, MEGA_WHALE_THRESHOLD)
+    log(f"🧮 [7/8] Computing CVD, Depth, VP, Cascades...")
+    cvd = compute_cvd(all_trades)
+    cvd10s = aggregate_cvd_10s(all_trades)
+    bs1m = aggregate_buy_sell_1m(all_trades)
+    large = extract_large_trades(whale_trades, WHALE_THRESHOLD, 20)
+    lw, mw, gw = classify_whales(whale_trades, WHALE_THRESHOLD_LOW, WHALE_THRESHOLD, MEGA_WHALE_THRESHOLD)
     
     mid = (orderbook['bids'][0][0] + orderbook['asks'][0][0]) / 2 if orderbook and orderbook['bids'] and orderbook['asks'] else None
     ob_multi = compute_orderbook_multi(orderbook, mid)
@@ -467,9 +489,9 @@ def fetch_all_data(symbol: str):
     pdh_pdl = compute_pdh_pdl(timeframe_data['1d']['candles'])
     vp5m = compute_vp(timeframe_data['5m']['candles'])
     vp15m = compute_vp(timeframe_data['15m']['candles'])
-    cascades = detect_cascades(trades)
+    cascades = detect_cascades(all_trades)
 
-    log(f"🔄 [9/9] Fetching USDT.D...")
+    log(f"🔄 [8/8] Fetching USDT.D...")
     dom_data = fetch_dominance('CRYPTOCAP:USDT.D', DOMINANCE_TIMEFRAMES, DOMINANCE_LIMIT)
     dominance = {'CRYPTOCAP:USDT.D': dom_data['data'] if dom_data and not dom_data.get('error') else {'error': 'Failed'}}
 
@@ -483,7 +505,7 @@ def fetch_all_data(symbol: str):
             'whale_low_threshold_usd': WHALE_THRESHOLD_LOW,
             'whale_threshold_usd': WHALE_THRESHOLD,
             'mega_whale_threshold_usd': MEGA_WHALE_THRESHOLD,
-            'version': 'okx_v1'
+            'version': 'okx_v2'
         },
         'data': {
             'coin': {
@@ -508,8 +530,8 @@ def fetch_all_data(symbol: str):
                     'derivatives': {
                         'open_interest': {'current': oi_current, 'history_5m': oi_hist_5m, 'history_1h': oi_hist_1h, 'history_1d': oi_hist_1d},
                         'funding_rate': {'current': funding_hist[-1]['rate'] if funding_hist else None, 'history': funding_hist},
-                        'global_long_short': {'1h': gls_1h, '15m': gls_15m},
-                        'top_trader_long_short': {'1h': tls_1h, '15m': tls_15m},
+                        'global_long_short': {'1h': ls_1h, '15m': ls_15m},
+                        'top_trader_long_short': {'1h': ls_1h, '15m': ls_15m},
                         'taker_volume': {'1h': tk_1h, '15m': tk_15m}
                     },
                     'ticker_24h': {
@@ -574,7 +596,7 @@ def build_compact_output(full):
 
 if __name__ == '__main__':
     symbol = os.environ.get('SYMBOL', 'SOLUSDT').strip().upper()
-    log(f"=== OKX Fetcher | symbol={symbol} ===")
+    log(f"=== OKX Fetcher v2 | symbol={symbol} ===")
     
     try:
         full_data = fetch_all_data(symbol)
@@ -589,7 +611,7 @@ if __name__ == '__main__':
         size_kb = out_path.stat().st_size / 1024
         log(f"\n✅ Saved: {out_path} ({size_kb:.1f} KB)")
         log(f"   Candles: 1m={len(compact_data['data']['coin']['timeframes']['1m']['candles'])} | 15m={len(compact_data['data']['coin']['timeframes']['15m']['candles'])} | 1h={len(compact_data['data']['coin']['timeframes']['1h']['candles'])}")
-        log(f"   CVD10s={len(compact_data['data']['coin']['extras']['cvd_10s'])} | Large={len(compact_data['data']['coin']['extras']['large_trades_last'])}")
+        log(f"   CVD10s={len(compact_data['data']['coin']['extras']['cvd_10s'])} | Large={len(compact_data['data']['coin']['extras']['large_trades_last'])} | Whales={compact_data['data']['coin']['extras']['whale_trades']['count']}")
         
     except Exception as e:
         log(f"❌ Error: {e}")
