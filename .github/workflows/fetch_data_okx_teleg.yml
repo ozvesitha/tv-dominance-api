@@ -14,7 +14,7 @@ jobs:
           python-version: '3.11'
       - run: pip install requests beautifulsoup4
       - run: |
-          SYMBOL=SOLUSDT TELEGRAM_HOURS=3 python okx_fetcher.py
+          SYMBOL=SOLUSDT TELEGRAM_HOURS=3 python fetch_data_okx_teleg.py
       - uses: actions/upload-artifact@v3
         with:
           name: data
