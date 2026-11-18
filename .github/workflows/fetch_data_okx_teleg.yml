@@ -1,4 +1,4 @@
-name: Fetch Data
+name: fetch_data_okx_teleg
 on:
   schedule:
     - cron: '0 * * * *'
