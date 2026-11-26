@@ -831,14 +831,35 @@ def build_compact_output(full):
             if isinstance(v.get('15m'), list):
                 v['15m'] = v['15m'][-lim['ls15m']:]
 
+    
+    # ======================== Dominance Compact ========================
     dom = out['data'].get('dominance', {})
-    for sym, v in dom.items():
-        if isinstance(v, list):
-            dom[sym] = v[-lim['dominance']:]
-        elif isinstance(v, dict) and 'error' not in v:
-            for tf, arr in list(v.items()):
-                if isinstance(arr, list):
-                    v[tf] = arr[-lim['dominance']:]
+
+    for sym, symbol_data in dom.items():
+
+        if isinstance(symbol_data, list):
+            dom[sym] = symbol_data[-lim['dominance']:]
+            continue
+
+        if not isinstance(symbol_data, dict) or 'error' in symbol_data:
+            continue
+
+        for tf, tf_data in symbol_data.items():
+
+            if isinstance(tf_data, list):
+                symbol_data[tf] = tf_data[-lim['dominance']:]
+                continue
+
+            if not isinstance(tf_data, dict):
+                continue
+
+            candles = tf_data.get('candles')
+
+            if isinstance(candles, list):
+                tf_data['candles'] = candles[-lim['dominance']:]
+
+                if 'count' in tf_data:
+                    tf_data['count'] = len(tf_data['candles'])
 
     if isinstance(ex.get('liquidation_cascades'), list):
         ex['liquidation_cascades'] = ex['liquidation_cascades'][-lim['liquidations']:]
