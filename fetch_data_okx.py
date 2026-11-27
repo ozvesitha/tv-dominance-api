@@ -53,7 +53,7 @@ COMPACT_LIMITS = {
     'ls1h': 60,
     'ls15m': 30,
     'dominance': 50,
-    'liquidations': 20
+    'liquidations': 20,
     'cvd_10s': 60,
     'buy_sell_1m': 30
 }
