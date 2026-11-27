@@ -23,9 +23,9 @@ from pathlib import Path
 import requests
 
 # ======================== تنظیمات ========================
-TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1d']
+TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d']
 DOMINANCE_TIMEFRAMES = ['1h', '4h']
-CANDLE_LIMITS = {'1m': 240, '5m': 100, '15m': 200, '1h': 200, '4h': 100, '1d': 60}
+CANDLE_LIMITS = {'5m': 100, '15m': 200, '1h': 200, '4h': 100, '1d': 60}
 DOMINANCE_LIMIT = 100
 ORDERBOOK_LIMIT = 400
 OI_5M_LIMIT = 72
@@ -47,7 +47,7 @@ OKX_BASE = 'https://www.okx.com'
 OUTPUT_DIR = Path('data')
 
 COMPACT_LIMITS = {
-    'candles': {'1m': 120, '5m': 60, '15m': 200, '1h': 200, '4h': 60, '1d': 40},
+    'candles': {'5m': 60, '15m': 200, '1h': 200, '4h': 60, '1d': 50},
     'oi': {'5m': 30, '1h': 30, '1d': 10},
     'funding': 15,
     'ls1h': 60,
@@ -720,7 +720,7 @@ def fetch_all_data(symbol: str):
     lw, mw, gw = classify_whales(whale_trades, WHALE_THRESHOLD_LOW, WHALE_THRESHOLD, MEGA_WHALE_THRESHOLD)
 
     # delta برای کندل‌ها از تریدهای واقعی
-    for tf in ['1m', '5m', '15m']:
+    for tf in ['5m', '15m']:
         timeframe_data[tf]['candles'] = enrich_candles_with_delta(
             timeframe_data[tf]['candles'], all_trades
         )
@@ -913,7 +913,7 @@ if __name__ == '__main__':
             json.dump(compact_data, f, ensure_ascii=False, separators=(',', ':'))
         size_kb = out_path.stat().st_size / 1024
         log(f"\n✅ ذخیره شد: {out_path} ({size_kb:.1f} KB)")
-        log(f"   تعداد کندل: 1m={len(compact_data['data']['coin']['timeframes']['1m']['candles'])} "
+        log(f"   تعداد کندل: 5m={len(compact_data['data']['coin']['timeframes']['5m']['candles'])} "
             f"| 15m={len(compact_data['data']['coin']['timeframes']['15m']['candles'])} "
             f"| 1h={len(compact_data['data']['coin']['timeframes']['1h']['candles'])} "
             f"| 4h={len(compact_data['data']['coin']['timeframes']['4h']['candles'])} "
