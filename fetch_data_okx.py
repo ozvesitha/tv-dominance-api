@@ -47,7 +47,7 @@ OKX_BASE = 'https://www.okx.com'
 OUTPUT_DIR = Path('data')
 
 COMPACT_LIMITS = {
-    'candles': {'5m': 60, '15m': 200, '1h': 200, '4h': 60, '1d': 50},
+    'candles': {'5m': 30, '15m': 200, '1h': 200, '4h': 60, '1d': 50},
     'oi': {'5m': 30, '1h': 30, '1d': 10},
     'funding': 15,
     'ls1h': 60,
@@ -838,13 +838,18 @@ def build_compact_output(full):
             for k in ('open', 'high', 'low', 'close'):
                 if k in c:
                     c[k] = _rprice(c[k])
-            # Round volumes
+            # Round base volume; remove quote_volume from compact candles
             if 'volume' in c:
                 c['volume'] = round(c['volume'], 2)
-            if 'quote_volume' in c:
-                c['quote_volume'] = int(round(c['quote_volume']))
+            c.pop('quote_volume', None)
 
     ex = out['data']['coin']['extras']
+
+    # --- Remove redundant raw whale trade records ---
+    for key in ('whale_trades_low', 'whale_trades', 'mega_whale_trades'):
+        summary = ex.get(key)
+        if isinstance(summary, dict):
+            summary.pop('trades', None)
 
     # --- Orderbook raw removed ---
     if ex.get('orderbook'):
