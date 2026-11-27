@@ -54,6 +54,8 @@ COMPACT_LIMITS = {
     'ls15m': 30,
     'dominance': 50,
     'liquidations': 20
+    'cvd_10s': 60,
+    'buy_sell_1m': 30
 }
 
 # ======================== توابع کمکی ========================
@@ -85,6 +87,17 @@ def safe_fetch(url: str, retries: int = 2):
 def to_okx_symbol(symbol: str) -> str:
     base = symbol.replace('USDT', '')
     return f"{base}-USDT-SWAP"
+
+def _rprice(x):
+    """Round a price adaptively so low-priced assets keep precision."""
+    if x is None or x == 0:
+        return x
+    ax = abs(x)
+    if ax >= 100:    return round(x, 2)
+    if ax >= 1:      return round(x, 4)
+    if ax >= 0.01:   return round(x, 6)
+    if ax >= 0.0001: return round(x, 8)
+    return round(x, 10)
 
 # ======================== کندل‌ها ========================
 def fetch_okx_candles(symbol: str, timeframe: str, custom_limit: int = None):
@@ -806,15 +819,39 @@ def build_compact_output(full):
     out = json.loads(json.dumps(full))
     lim = COMPACT_LIMITS
 
+    # --- Candles: truncate, drop always-zero fields, round ---
     for tf, td in out['data']['coin']['timeframes'].items():
-        if isinstance(td.get('candles'), list):
-            td['candles'] = td['candles'][-lim['candles'].get(tf, 100):]
+        if not isinstance(td.get('candles'), list):
+            continue
+        td['candles'] = td['candles'][-lim['candles'].get(tf, 100):]
+        higher_tf = tf in ('1h', '4h', '1d')
+        for c in td['candles']:
+            # Fields never populated anywhere -> drop
+            c.pop('trades', None)
+            c.pop('taker_buy_base', None)
+            # Delta fields never populated for 1h/4h/1d -> drop
+            if higher_tf:
+                c.pop('taker_buy_quote', None)
+                c.pop('delta', None)
+                c.pop('delta_ratio', None)
+            # Round OHLC adaptively
+            for k in ('open', 'high', 'low', 'close'):
+                if k in c:
+                    c[k] = _rprice(c[k])
+            # Round volumes
+            if 'volume' in c:
+                c['volume'] = round(c['volume'], 2)
+            if 'quote_volume' in c:
+                c['quote_volume'] = int(round(c['quote_volume']))
 
     ex = out['data']['coin']['extras']
+
+    # --- Orderbook raw removed ---
     if ex.get('orderbook'):
         ex['orderbook'] = {'lastUpdateId': ex['orderbook'].get('lastUpdateId'),
                            'raw_removed': True, 'note': 'Use orderbook_depth_multi'}
 
+    # --- Derivatives truncation ---
     d = ex.get('derivatives', {})
     oi = d.get('open_interest', {})
     for k, l in [('history_5m', '5m'), ('history_1h', '1h'), ('history_1d', '1d')]:
@@ -831,33 +868,29 @@ def build_compact_output(full):
             if isinstance(v.get('15m'), list):
                 v['15m'] = v['15m'][-lim['ls15m']:]
 
-    
-    # ======================== Dominance Compact ========================
+    # --- NEW: truncate high-frequency aggregated arrays ---
+    if isinstance(ex.get('cvd_10s'), list):
+        ex['cvd_10s'] = ex['cvd_10s'][-lim['cvd_10s']:]
+    if isinstance(ex.get('buy_sell_1m'), list):
+        ex['buy_sell_1m'] = ex['buy_sell_1m'][-lim['buy_sell_1m']:]
+
+    # --- Dominance compact ---
     dom = out['data'].get('dominance', {})
-
     for sym, symbol_data in dom.items():
-
         if isinstance(symbol_data, list):
             dom[sym] = symbol_data[-lim['dominance']:]
             continue
-
         if not isinstance(symbol_data, dict) or 'error' in symbol_data:
             continue
-
         for tf, tf_data in symbol_data.items():
-
             if isinstance(tf_data, list):
                 symbol_data[tf] = tf_data[-lim['dominance']:]
                 continue
-
             if not isinstance(tf_data, dict):
                 continue
-
             candles = tf_data.get('candles')
-
             if isinstance(candles, list):
                 tf_data['candles'] = candles[-lim['dominance']:]
-
                 if 'count' in tf_data:
                     tf_data['count'] = len(tf_data['candles'])
 
