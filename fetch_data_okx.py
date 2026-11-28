@@ -49,7 +49,7 @@ OUTPUT_DIR = Path('data')
 COMPACT_LIMITS = {
     'candles': {'5m': 30, '15m': 200, '1h': 200, '4h': 60, '1d': 50},
     'oi': {'5m': 30, '1h': 30, '1d': 10},
-    'funding': 15,
+    'funding': 3,
     'ls1h': 60,
     'ls15m': 30,
     'dominance': 50,
@@ -242,8 +242,7 @@ def fetch_okx_open_interest_hist(symbol: str, period: str, limit: int):
     raw.reverse()  # صعودی
     return [{
         'time': to_iso(int(d[0])),
-        'oi_usd': float(d[1]),
-        'oi_value': 0
+        'oi_usd': float(d[1])
     } for d in raw]
 
 # ======================== Funding ========================
@@ -851,10 +850,8 @@ def build_compact_output(full):
         if isinstance(summary, dict):
             summary.pop('trades', None)
 
-    # --- Orderbook raw removed ---
-    if ex.get('orderbook'):
-        ex['orderbook'] = {'lastUpdateId': ex['orderbook'].get('lastUpdateId'),
-                           'raw_removed': True, 'note': 'Use orderbook_depth_multi'}
+    # --- Remove unused orderbook placeholder ---
+    ex.pop('orderbook', None)
 
     # --- Derivatives truncation ---
     d = ex.get('derivatives', {})
@@ -872,12 +869,32 @@ def build_compact_output(full):
                 v['1h'] = v['1h'][-lim['ls1h']:]
             if isinstance(v.get('15m'), list):
                 v['15m'] = v['15m'][-lim['ls15m']:]
+    # --- Taker volume compact: keep only time and ratio ---
+    taker = d.get('taker_volume', {})
+    if isinstance(taker, dict):
+        for tf in ('1h', '15m'):
+            rows = taker.get(tf)
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        row.pop('buy_vol', None)
+                        row.pop('sell_vol', None)
 
     # --- NEW: truncate high-frequency aggregated arrays ---
     if isinstance(ex.get('cvd_10s'), list):
         ex['cvd_10s'] = ex['cvd_10s'][-lim['cvd_10s']:]
     if isinstance(ex.get('buy_sell_1m'), list):
         ex['buy_sell_1m'] = ex['buy_sell_1m'][-lim['buy_sell_1m']:]
+
+    # --- Compact high-frequency order-flow buckets ---
+    for key in ('cvd_10s', 'buy_sell_1m'):
+        rows = ex.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    row.pop('buy', None)
+                    row.pop('sell', None)
+                    row.pop('count', None)
 
     # --- Dominance compact ---
     dom = out['data'].get('dominance', {})
@@ -898,6 +915,14 @@ def build_compact_output(full):
                 tf_data['candles'] = candles[-lim['dominance']:]
                 if 'count' in tf_data:
                     tf_data['count'] = len(tf_data['candles'])
+                # --- USDT.D compact: keep only time and close ---
+                if tf in ('1h', '4h'):
+                    for candle in tf_data['candles']:
+                        if isinstance(candle, dict):
+                            candle.pop('open', None)
+                            candle.pop('high', None)
+                            candle.pop('low', None)
+                            candle.pop('volume', None)
 
     if isinstance(ex.get('liquidation_cascades'), list):
         ex['liquidation_cascades'] = ex['liquidation_cascades'][-lim['liquidations']:]
